@@ -1,4 +1,4 @@
-name: OnePlus OTA Full Pipeline
+name: OnePlus OTA Direct Split Pipeline
 
 on:
   workflow_dispatch:
@@ -7,108 +7,194 @@ on:
         description: "Direct OTA download link"
         required: true
       tag:
-        description: "Release tag (ex: N4-OTA-v1)"
+        description: "Release tag (example: N4-OTA-v1)"
         required: true
 
 jobs:
-  prepare:
+  pipeline:
     runs-on: ubuntu-latest
-    steps:
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /usr/local/share/powershell
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /usr/lib/jvm
-          sudo docker image prune -af || true
-          sudo apt-get remove -y azure-cli google-cloud-sdk || true
-          sudo apt-get autoremove -y
 
-      - name: Install tools
+    steps:
+      - name: 🧹 Aggressive Disk Cleanup
+        run: |
+          echo "[INFO] Cleaning up runner disk..."
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/local/share/powershell || true
+          sudo docker system prune -af || true
+          sudo apt-get purge -y google-cloud-cli || true
+          sudo apt-get autoremove -y
+          echo "[INFO] Cleanup complete."
+          df -h
+
+      - name: 📦 Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y aria2 unzip zip p7zip-full jq
+          sudo apt-get install -y aria2 jq
 
-  process:
-    needs: prepare
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download OTA
+      # ------------------------------
+      # DM: PIPELINE START
+      # ------------------------------
+
+      - name: 📩 DM — Pipeline Started
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_DM: ${{ secrets.TG_DM }}
         run: |
-          echo "Downloading OTA..."
+          curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+            -d chat_id="$TG_DM" \
+            -d text="🚀 *OTA Pipeline Started*\nTag: *${{ github.event.inputs.tag }}*\nURL received and processing begins..." \
+            -d parse_mode="Markdown"
+
+      # ------------------------------
+      # DOWNLOAD
+      # ------------------------------
+
+      - name: ⬇️ DM — Download Starting
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_DM: ${{ secrets.TG_DM }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+            -d chat_id="$TG_DM" \
+            -d text="⬇️ Starting OTA download..."
+
+
+      - name: ⬇️ Download OTA with aria2
+        run: |
           aria2c "${{ github.event.inputs.ota_url }}" -x16 -s16 -k1M -o ota.zip
 
-      - name: Extract OTA
+      - name: ⬇️ DM — Download Finished
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_DM: ${{ secrets.TG_DM }}
         run: |
-          mkdir extracted
-          unzip -q ota.zip -d extracted
+          SIZE=$(du -h ota.zip | cut -f1)
+          curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+            -d chat_id="$TG_DM" \
+            -d text="✅ Download completed.\nFile size: *$SIZE*" \
+            -d parse_mode="Markdown"
 
-      - name: Rezip extracted contents
+      # ------------------------------
+      # SPLIT
+      # ------------------------------
+
+      - name: ✂️ Splitting OTA ZIP into 1.99GB parts
         run: |
-          echo "Re-zipping extracted files..."
-          zip -r -9 -q rezip.zip extracted/
+          split -b 1990M ota.zip ota.part-
+          echo "Split complete."
 
-      - name: Split ZIP into 1.99GB parts
+      - name: ✂️ DM — Splitting Progress
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_DM: ${{ secrets.TG_DM }}
         run: |
-          echo "Splitting into 1.99GB parts..."
-          split -b 1990M rezip.zip rezip.part-
+          PARTS=$(ls ota.part-* | wc -l)
+          MSG="✂️ Splitting completed.\nCreated *$PARTS* parts:"
+          curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+            -d chat_id="$TG_DM" \
+            -d text="$MSG" \
+            -d parse_mode="Markdown"
 
-      - name: List parts
-        run: ls -lh rezip.part-*
+          i=1
+          for f in ota.part-*; do
+            curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+              -d chat_id="$TG_DM" \
+              -d text="📦 Part $i created: \`$f\`" \
+              -d parse_mode="Markdown"
+            i=$((i+1))
+          done
 
-      - name: Create GitHub Release
-        id: create_release
+      # ------------------------------
+      # GITHUB RELEASE
+      # ------------------------------
+
+      - name: 📤 Create GitHub Release
+        id: release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ github.event.inputs.tag }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload parts to GitHub Release
+      - name: 📤 Upload Parts to GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ github.event.inputs.tag }}
-          files: rezip.part-*
+          files: ota.part-*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload parts to Telegram Channel
+      - name: 📩 DM — GitHub Release Uploaded
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_DM: ${{ secrets.TG_DM }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+            -d chat_id="$TG_DM" \
+            -d text="📤 All parts uploaded to *GitHub Release*." \
+            -d parse_mode="Markdown"
+
+      # ------------------------------
+      # TELEGRAM UPLOAD
+      # ------------------------------
+
+      - name: 📡 Upload to Telegram Channel
         env:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT: ${{ secrets.TG_CHAT }}
+          TG_DM: ${{ secrets.TG_DM }}
         run: |
-          for f in rezip.part-*; do
-            echo "Uploading $f to Telegram channel..."
+          i=1
+          for f in ota.part-*; do
+            curl -s -X POST "https://api.telegram.org/bot$TG_DM/sendMessage" \
+              -d chat_id="$TG_DM" \
+              -d text="📡 Uploading part $i to Telegram..." \
+              -d parse_mode="Markdown"
+
             curl -s -F chat_id="$TG_CHAT" -F document=@"$f" \
-              https://api.telegram.org/bot$TG_TOKEN/sendDocument \
-            | jq .
+              https://api.telegram.org/bot$TG_TOKEN/sendDocument
+
+            curl -s -X POST "https://api.telegram.org/bot$TG_DM/sendMessage" \
+              -d chat_id="$TG_DM" \
+              -d text="✔️ Uploaded part $i." \
+              -d parse_mode="Markdown"
+            i=$((i+1))
           done
 
-      - name: Notify Success (DM)
+      # ------------------------------
+      # SUCCESS / FAILURE DM
+      # ------------------------------
+
+      - name: 🎉 DM — Pipeline Success
         if: ${{ success() }}
         env:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_DM: ${{ secrets.TG_DM }}
         run: |
-          curl -s -X POST \
-            "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+          curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
             -d chat_id="$TG_DM" \
-            -d text="✅ OTA Pipeline SUCCEEDED for tag: ${{ github.event.inputs.tag }}"
+            -d text="🎉 *Pipeline Completed Successfully!*\nTag: *${{ github.event.inputs.tag }}*" \
+            -d parse_mode="Markdown"
 
-      - name: Notify Failure (DM)
+      - name: ❌ DM — Pipeline Failed
         if: ${{ failure() }}
         env:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_DM: ${{ secrets.TG_DM }}
         run: |
-          curl -s -X POST \
-            "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+          curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
             -d chat_id="$TG_DM" \
-            -d text="❌ OTA Pipeline FAILED. Check GitHub Actions."
+            -d text="❌ Pipeline FAILED.\nCheck GitHub Actions logs." \
+            -d parse_mode="Markdown"
 
-      - name: Cleanup
+      # ------------------------------
+      # CLEANUP
+      # ------------------------------
+
+      - name: 🧹 Cleanup Workspace
         if: ${{ always() }}
         run: |
-          rm -rf ota.zip extracted rezip.zip rezip.part-*
-          echo "Cleanup complete."
+          rm -rf ota.zip ota.part-*
+          echo "Cleanup finished."
