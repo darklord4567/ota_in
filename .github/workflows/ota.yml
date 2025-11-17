@@ -41,6 +41,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y aria2 p7zip-full jq gh
+          # Install Python dependencies for Telegram Upload
+          pip install pyrogram tgcrypto
 
       # -------------------------------------------------
       # DM: START
@@ -132,17 +134,15 @@ jobs:
       - name: ✂️ Split Using 7z (Into 'split_output' folder)
         run: |
           mkdir -p split_output
-          # Split into directory
-          7z a -t7z -mx=0 -v1990m "split_output/${{ github.event.inputs.tag }}.7z" "${{ github.event.inputs.tag }}.zip"
+          # Lowered split size slightly to 1900m to be safe within 2GB limit
+          7z a -t7z -mx=0 -v1900m "split_output/${{ github.event.inputs.tag }}.7z" "${{ github.event.inputs.tag }}.zip"
 
       - name: 💬 DM — Split Finished
         env:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_DM: ${{ secrets.TG_DM }}
         run: |
-          # Count files in the directory
           COUNT=$(ls split_output/* | wc -l)
-          
           curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
             -d chat_id="$TG_DM" \
             -d text="✅ *Split Finished*\nParts created: *$COUNT*" \
@@ -164,51 +164,87 @@ jobs:
           fi
 
       # -------------------------------------------------
-      # FIXED UPLOAD: USE 'gh release upload'
+      # UPLOAD TO GITHUB
       # -------------------------------------------------
       - name: 📤 Upload Split Parts to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ github.event.inputs.tag }}"
-          
-          # Iterate over files in split_output
           for f in split_output/*; do
             echo "Uploading $f ..."
-            # --clobber overwrites if file exists
             gh release upload "$TAG" "$f" --clobber
           done
 
       # -------------------------------------------------
-      # UPLOAD TO TELEGRAM
+      # UPLOAD TO TELEGRAM (PYTHON + PYROGRAM)
       # -------------------------------------------------
-      - name: 📡 Upload to Telegram Channel
+      - name: 📡 Upload to Telegram (Pyrogram)
         env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT: ${{ secrets.TG_CHAT }}
           TG_DM: ${{ secrets.TG_DM }}
         run: |
-          i=1
+          # We write the python script on the fly
+          cat <<EOF > upload_tg.py
+          import os
+          import glob
+          import asyncio
+          from pyrogram import Client
           
-          # Loop through files (sorted)
-          for f in $(ls split_output/* | sort); do
-            fname=$(basename "$f")
-            echo "Processing $fname..."
+          # Get environment variables
+          api_id = os.environ.get("TG_API_ID")
+          api_hash = os.environ.get("TG_API_HASH")
+          bot_token = os.environ.get("TG_TOKEN")
+          chat_id_str = os.environ.get("TG_CHAT")
+          dm_id_str = os.environ.get("TG_DM")
 
-            curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
-              -d chat_id="$TG_DM" \
-              -d text="📡 Uploading part $i..." \
-              -d parse_mode="Markdown"
+          # Convert chat IDs to integers
+          try:
+              chat_id = int(chat_id_str)
+              dm_id = int(dm_id_str)
+          except ValueError:
+              print("Error: TG_CHAT or TG_DM must be valid integers.")
+              exit(1)
 
-            curl -s -F chat_id="$TG_CHAT" -F document=@"$f" \
-              https://api.telegram.org/bot$TG_TOKEN/sendDocument
+          app = Client("my_bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
 
-            curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
-              -d chat_id="$TG_DM" \
-              -d text="✔️ Part $i uploaded." \
-              -d parse_mode="Markdown"
-            i=$((i+1))
-          done
+          async def progress(current, total):
+              # Optional: You could implement a progress bar here, 
+              # but printing too much clogs Actions logs.
+              pass
+
+          async def main():
+              async with app:
+                  files = sorted(glob.glob("split_output/*"))
+                  i = 1
+                  for file in files:
+                      fname = os.path.basename(file)
+                      print(f"Uploading {fname}...")
+                      
+                      # Notify DM
+                      await app.send_message(dm_id, f"📡 Uploading part {i}: {fname}")
+                      
+                      # Upload Document (Supports up to 2GB)
+                      await app.send_document(
+                          chat_id=chat_id, 
+                          document=file, 
+                          caption=f"📦 Part {i}: \`{fname}\`",
+                          progress=progress
+                      )
+                      
+                      # Notify DM Success
+                      await app.send_message(dm_id, f"✔️ Part {i} uploaded.")
+                      i += 1
+
+          if __name__ == "__main__":
+              app.run(main())
+          EOF
+
+          # Run the script
+          python3 upload_tg.py
 
       # -------------------------------------------------
       # DM: SUCCESS
@@ -244,5 +280,5 @@ jobs:
       - name: 🧹 Cleanup
         if: ${{ always() }}
         run: |
-          rm -rf split_output *.zip ota.zip
+          rm -rf split_output *.zip ota.zip upload_tg.py my_bot.session
           echo "Cleanup complete."
