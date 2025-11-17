@@ -92,7 +92,7 @@ jobs:
             # --- DM: DOWNLOAD STARTED ---
             curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
               -d chat_id="$TG_DM" \
-              -d text="⬇️ *Downloading Started* ($count/$total)%0AVersion: \`$VERSION\`" \
+              -d text="⬇️ *Downloading Started IND * ($count/$total)%0AVersion: \`$VERSION\`" \
               -d parse_mode="Markdown" > /dev/null
 
             # 2. Download
