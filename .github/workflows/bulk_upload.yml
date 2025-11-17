@@ -41,6 +41,8 @@ jobs:
       - name: 🔄 Process OTAs Loop
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_DM: ${{ secrets.TG_DM }}
         run: |
           # -------------------------------------------------------
           # CONFIGURATION: LIST YOUR OTAS HERE
@@ -76,7 +78,6 @@ jobs:
             URL="${item##*|}"
             
             # Define Names
-            # Using CPH2661IN prefix for the Release Tag
             TAG="CPH2661IN-${VERSION}"
             BASE_NAME="CPH2661IN-${VERSION}"
             
@@ -84,41 +85,72 @@ jobs:
             echo "🚀 Processing [$count/$total]: $TAG"
             echo "---------------------------------------------------"
 
-            # 1. Check if Release already exists (Skip if yes)
+            # Check if Release exists
             if gh release view "$TAG" >/dev/null 2>&1; then
               echo "⚠️ Release $TAG already exists. Skipping..."
               continue
             fi
 
+            # --- DM: DOWNLOAD STARTED ---
+            curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+              -d chat_id="$TG_DM" \
+              -d text="⬇️ *Downloading Started* ($count/$total)%0AVersion: \`$VERSION\`" \
+              -d parse_mode="Markdown" > /dev/null
+
             # 2. Download
             echo "⬇️ Downloading..."
             aria2c "$URL" -x16 -s16 -k1M -o ota.zip -q
 
+            # --- DM: ZIPPING ---
+            curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+              -d chat_id="$TG_DM" \
+              -d text="✂️ *Zipping/Splitting...*" \
+              -d parse_mode="Markdown" > /dev/null
+
             # 3. Split
             echo "✂️ Splitting..."
             mkdir -p split_output
-            # Split to 1900MB to be safe for GitHub limits
             7z a -t7z -mx=0 -v1900m "split_output/${BASE_NAME}.7z" "ota.zip"
 
             # 4. Create Release
             echo "📦 Creating GitHub Release..."
             NOTES="**Region:** INDIA ( CPH 2661IN )"$'\n'"**Version:** ${VERSION}"
-            
             gh release create "$TAG" -t "OnePlus OTA - ${VERSION}" -n "$NOTES"
 
             # 5. Upload
             echo "📤 Uploading assets..."
-            # Loop through split folder and upload
             for f in split_output/*; do
                gh release upload "$TAG" "$f" --clobber
             done
 
-            # 6. CRITICAL: Cleanup (Delete files to free space for next loop)
+            # Calculate parts count for DM
+            PARTS_COUNT=$(ls split_output/* | wc -l)
+
+            # --- DM: UPLOAD FINISHED ---
+            curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+              -d chat_id="$TG_DM" \
+              -d text="✅ *Release Created!*%0ATag: \`$TAG\`%0AUploaded Parts: *$PARTS_COUNT*" \
+              -d parse_mode="Markdown" > /dev/null
+
+            # 6. Cleanup
             echo "🧹 Cleaning up..."
             rm -rf ota.zip split_output
             
             echo "✅ Done with $TAG"
-            echo ""
           done
           
           echo "🎉 All tasks finished!"
+
+      # -------------------------------------------------
+      # 5. FAILURE NOTIFICATION
+      # -------------------------------------------------
+      - name: ❌ DM — Pipeline Failed
+        if: ${{ failure() }}
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_DM: ${{ secrets.TG_DM }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+          -d chat_id="$TG_DM" \
+          -d text="❌ *Pipeline FAILED!* Check GitHub Actions logs for details." \
+          -d parse_mode="Markdown"
