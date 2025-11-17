@@ -16,7 +16,7 @@ jobs:
 
     steps:
       # -------------------------------------------------
-      # 1. CHECKOUT FIRST (MOVED TO TOP)
+      # 1. CHECKOUT FIRST
       # -------------------------------------------------
       - name: 📥 Checkout Repo
         uses: actions/checkout@v3
@@ -132,6 +132,7 @@ jobs:
       - name: ✂️ Split Using 7z (Into 'split_output' folder)
         run: |
           mkdir -p split_output
+          # Split into directory
           7z a -t7z -mx=0 -v1990m "split_output/${{ github.event.inputs.tag }}.7z" "${{ github.event.inputs.tag }}.zip"
 
       - name: 💬 DM — Split Finished
@@ -163,30 +164,23 @@ jobs:
           fi
 
       # -------------------------------------------------
-      # UPLOAD TO RELEASE (ITERATE DIRECTORY)
+      # FIXED UPLOAD: USE 'gh release upload'
       # -------------------------------------------------
       - name: 📤 Upload Split Parts to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ github.event.inputs.tag }}"
-          RELEASE_ID=$(gh api repos/${{ github.repository }}/releases/tags/$TAG --jq '.id')
-
-          # Loop through EVERYTHING in the split_output folder
+          
+          # Iterate over files in split_output
           for f in split_output/*; do
             echo "Uploading $f ..."
-            fname=$(basename "$f")
-            
-            gh api \
-              --method POST \
-              -H "Accept: application/vnd.github+json" \
-              -H "Content-Type: application/octet-stream" \
-              /repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name="$fname" \
-              --input "$f"
+            # --clobber overwrites if file exists
+            gh release upload "$TAG" "$f" --clobber
           done
 
       # -------------------------------------------------
-      # UPLOAD TO TELEGRAM (ITERATE DIRECTORY)
+      # UPLOAD TO TELEGRAM
       # -------------------------------------------------
       - name: 📡 Upload to Telegram Channel
         env:
@@ -196,7 +190,7 @@ jobs:
         run: |
           i=1
           
-          # Loop through EVERYTHING in the split_output folder
+          # Loop through files (sorted)
           for f in $(ls split_output/* | sort); do
             fname=$(basename "$f")
             echo "Processing $fname..."
