@@ -1,21 +1,114 @@
-name: Telegram Upload Test
+name: OnePlus OTA Full Pipeline
 
 on:
   workflow_dispatch:
+    inputs:
+      ota_url:
+        description: "Direct OTA download link"
+        required: true
+      tag:
+        description: "Release tag (ex: N4-OTA-v1)"
+        required: true
 
 jobs:
-  test-upload:
+  prepare:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Create test file
-        run: echo "Hello from GitHub Actions 🚀" > test.txt
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/local/share/powershell
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/lib/jvm
+          sudo docker image prune -af || true
+          sudo apt-get remove -y azure-cli google-cloud-sdk || true
+          sudo apt-get autoremove -y
 
-      - name: Upload to Telegram
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2 unzip zip p7zip-full jq
+
+  process:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download OTA
+        run: |
+          echo "Downloading OTA..."
+          aria2c "${{ github.event.inputs.ota_url }}" -x16 -s16 -k1M -o ota.zip
+
+      - name: Extract OTA
+        run: |
+          mkdir extracted
+          unzip -q ota.zip -d extracted
+
+      - name: Rezip extracted contents
+        run: |
+          echo "Re-zipping extracted files..."
+          zip -r -9 -q rezip.zip extracted/
+
+      - name: Split ZIP into 1.99GB parts
+        run: |
+          echo "Splitting into 1.99GB parts..."
+          split -b 1990M rezip.zip rezip.part-
+
+      - name: List parts
+        run: ls -lh rezip.part-*
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload parts to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          files: rezip.part-*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload parts to Telegram Channel
         env:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT: ${{ secrets.TG_CHAT }}
         run: |
-          curl -F chat_id="$TG_CHAT" \
-               -F document=@test.txt \
-               https://api.telegram.org/bot$TG_TOKEN/sendDocument
+          for f in rezip.part-*; do
+            echo "Uploading $f to Telegram channel..."
+            curl -s -F chat_id="$TG_CHAT" -F document=@"$f" \
+              https://api.telegram.org/bot$TG_TOKEN/sendDocument \
+            | jq .
+          done
+
+      - name: Notify Success (DM)
+        if: ${{ success() }}
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_DM: ${{ secrets.TG_DM }}
+        run: |
+          curl -s -X POST \
+            "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+            -d chat_id="$TG_DM" \
+            -d text="✅ OTA Pipeline SUCCEEDED for tag: ${{ github.event.inputs.tag }}"
+
+      - name: Notify Failure (DM)
+        if: ${{ failure() }}
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_DM: ${{ secrets.TG_DM }}
+        run: |
+          curl -s -X POST \
+            "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+            -d chat_id="$TG_DM" \
+            -d text="❌ OTA Pipeline FAILED. Check GitHub Actions."
+
+      - name: Cleanup
+        if: ${{ always() }}
+        run: |
+          rm -rf ota.zip extracted rezip.zip rezip.part-*
+          echo "Cleanup complete."
