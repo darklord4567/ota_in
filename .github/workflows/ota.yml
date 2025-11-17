@@ -16,7 +16,15 @@ jobs:
 
     steps:
       # -------------------------------------------------
-      # FREE DISK
+      # 1. CHECKOUT FIRST (MOVED TO TOP)
+      # -------------------------------------------------
+      - name: 📥 Checkout Repo
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      # -------------------------------------------------
+      # 2. FREE DISK
       # -------------------------------------------------
       - name: 🧹 Free Disk Space (Aggressive)
         run: |
@@ -123,10 +131,7 @@ jobs:
 
       - name: ✂️ Split Using 7z (Into 'split_output' folder)
         run: |
-          # 1. Create the directory
           mkdir -p split_output
-          
-          # 2. Run 7z, pointing the output file INSIDE the directory
           7z a -t7z -mx=0 -v1990m "split_output/${{ github.event.inputs.tag }}.7z" "${{ github.event.inputs.tag }}.zip"
 
       - name: 💬 DM — Split Finished
@@ -141,14 +146,6 @@ jobs:
             -d chat_id="$TG_DM" \
             -d text="✅ *Split Finished*\nParts created: *$COUNT*" \
             -d parse_mode="Markdown"
-
-      # -------------------------------------------------
-      # REQUIRED CHECKOUT
-      # -------------------------------------------------
-      - name: 📥 Checkout Repo
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
 
       # -------------------------------------------------
       # CREATE RELEASE
@@ -200,7 +197,6 @@ jobs:
           i=1
           
           # Loop through EVERYTHING in the split_output folder
-          # Using sort to ensure 001 uploads before 002
           for f in $(ls split_output/* | sort); do
             fname=$(basename "$f")
             echo "Processing $fname..."
