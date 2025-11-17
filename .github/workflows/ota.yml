@@ -81,7 +81,6 @@ jobs:
               Pct=$((100 * Done / Total))
               Step=$((Pct / 5))
 
-              # No 100% DM
               if [ "$Step" -ne "$Last" ] && [ "$Pct" -lt 100 ]; then
                 Bars=$(printf "%0.s█" $(seq 1 $Step))
                 Spaces=$(printf "%0.s-" $(seq 1 $((20-Step))))
@@ -109,7 +108,7 @@ jobs:
       # -------------------------------------------------
       # RENAME + SPLIT
       # -------------------------------------------------
-      - name: Rename OTA to TAG
+      - name: Rename OTA to TAG.zip
         run: |
           mv ota.zip "${{ github.event.inputs.tag }}.zip"
 
@@ -138,7 +137,15 @@ jobs:
             -d parse_mode="Markdown"
 
       # -------------------------------------------------
-      # FIXED RELEASE CREATION (NO 404)
+      # REQUIRED CHECKOUT BEFORE GH CLI
+      # -------------------------------------------------
+      - name: 📥 Checkout Repo
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      # -------------------------------------------------
+      # FIXED RELEASE CREATION (NO 404 + NO .git ERROR)
       # -------------------------------------------------
       - name: 📤 Ensure GitHub Release exists
         env:
@@ -153,7 +160,7 @@ jobs:
           fi
 
       # -------------------------------------------------
-      # FIXED MULTI-FILE UPLOAD
+      # FIXED MULTI-FILE UPLOAD TO RELEASE
       # -------------------------------------------------
       - name: 📤 Upload Split Parts to GitHub Release
         env:
@@ -213,7 +220,7 @@ jobs:
           -d parse_mode="Markdown"
 
       # -------------------------------------------------
-      # DM: FAILURE (THIS WAS MISSING — FIXED)
+      # DM: FAILURE (FIXED)
       # -------------------------------------------------
       - name: ❌ DM — Pipeline Failed
         if: ${{ failure() }}
