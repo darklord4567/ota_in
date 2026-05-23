@@ -1,4 +1,4 @@
-name: OnePlus Bulk OTA Archiver
+name: OTA DOWNLOAD
 
 on:
   workflow_dispatch:
